@@ -1,0 +1,148 @@
+"""litellm 을 통한 LLM 호출과 Langfuse generation 기록을 담당하는 모듈."""
+
+import json
+import logging
+
+import litellm
+
+from project_config.settings import settings
+from utils import prompt as prompt_utils
+
+logger = logging.getLogger(__name__)
+
+FIRST_JSON_KEYS = ["recommended_city", "weather", "events", "reason"]
+
+
+def classify_exception(exc: Exception) -> str:
+    """litellm 은 provider 별 예외를 자체 클래스명으로 정규화해 던지므로,
+    isinstance 대신 클래스명 문자열로 분류해 provider 에 상관없이 동작하게 한다."""
+    name = exc.__class__.__name__
+    if "Authentication" in name or "PermissionDenied" in name:
+        return "AUTH_ERROR"
+    if "RateLimit" in name:
+        return "QUOTA_ERROR"
+    if "Timeout" in name or "Connection" in name:
+        return "NETWORK_ERROR"
+    return "UNKNOWN_ERROR"
+
+
+def call_first_recommendation(date_str: str, errors: list, span=None) -> dict:
+    for attempt in range(2):
+        messages = prompt_utils.build_first_recommendation_messages(date_str, strict=(attempt == 1))
+        generation = (
+            span.generation(name=f"first_recommendation_attempt_{attempt + 1}", input=messages)
+            if span
+            else None
+        )
+        try:
+            response = litellm.completion(
+                model=settings.openai_model,
+                messages=messages,
+                api_key=settings.openai_api_key,
+                response_format={"type": "json_object"},
+                temperature=0.7,
+            )
+            content = response.choices[0].message.content
+            if generation:
+                generation.end(output=content, model=response.model)
+
+            data = json.loads(content)
+            missing = [k for k in FIRST_JSON_KEYS if k not in data]
+            if missing:
+                raise ValueError(f"필수 키 누락: {missing}")
+            if not isinstance(data.get("events"), list):
+                data["events"] = [str(data["events"])]
+            return data
+        except (json.JSONDecodeError, ValueError) as e:
+            if generation:
+                generation.end(output={"error": str(e)})
+            errors.append(
+                {"step": "first_recommendation", "type": "PARSE_ERROR", "message": f"시도 {attempt + 1}: {e}"}
+            )
+        except Exception as e:
+            if generation:
+                generation.end(output={"error": str(e)})
+            errors.append(
+                {"step": "first_recommendation", "type": classify_exception(e), "message": str(e)}
+            )
+            break
+
+    return {
+        "recommended_city": "정보 없음",
+        "weather": "정보 없음",
+        "events": [],
+        "reason": "LLM 응답을 받아오지 못해 기본값으로 대체되었습니다.",
+    }
+
+
+def build_fallback_report(date_str: str, first_json: dict, restaurants: list, errors: list) -> str:
+    """최종 리포트 LLM 호출이 실패해도 결과 파일이 항상 생성되도록 로컬에서 조립하는 대체 리포트."""
+    city = first_json.get("recommended_city", "정보 없음")
+    weather = first_json.get("weather", "정보 없음")
+    events = first_json.get("events") or []
+    reason = first_json.get("reason", "정보 없음")
+
+    events_md = "\n".join(f"- {e}" for e in events) if events else "- 데이터 없음"
+    if restaurants:
+        restaurants_md = "\n".join(
+            f"- {r['name']} ({r.get('category', '')}) - {r['address']}"
+            + (f" - {r['url']}" if r.get("url") else "")
+            for r in restaurants
+        )
+    else:
+        restaurants_md = "- 데이터 없음"
+    errors_md = (
+        "\n".join(f"- [{e['step']}] {e['type']}: {e['message']}" for e in errors)
+        if errors
+        else "- 오류 없음"
+    )
+
+    return f"""# {date_str} 국내 여행 추천 리포트
+
+## 추천 지역
+{city}
+
+## 추천 이유
+{reason}
+
+## 날씨 요약
+{weather}
+
+## 행사/축제
+{events_md}
+
+## 맛집 추천
+{restaurants_md}
+
+## 1일 일정 제안
+- 오전: {city} 주요 명소 관광
+- 오후: 주변 자연/문화 명소 탐방
+- 저녁: 위 맛집 목록 중 한 곳에서 식사
+
+## 오류 요약(errors)
+{errors_md}
+"""
+
+
+def call_final_report(date_str: str, first_json: dict, restaurants: list, errors: list, span=None) -> str:
+    messages = prompt_utils.build_final_report_messages(date_str, first_json, restaurants, errors)
+    generation = span.generation(name="final_report", input=messages) if span else None
+    try:
+        response = litellm.completion(
+            model=settings.openai_model,
+            messages=messages,
+            api_key=settings.openai_api_key,
+            temperature=0.7,
+        )
+        content = (response.choices[0].message.content or "").strip()
+        if not content:
+            raise ValueError("빈 응답")
+        if generation:
+            generation.end(output=content, model=response.model)
+        return content
+    except Exception as e:
+        if generation:
+            generation.end(output={"error": str(e)})
+        error_type = "PARSE_ERROR" if isinstance(e, ValueError) else classify_exception(e)
+        errors.append({"step": "report_generation", "type": error_type, "message": str(e)})
+        return build_fallback_report(date_str, first_json, restaurants, errors)
