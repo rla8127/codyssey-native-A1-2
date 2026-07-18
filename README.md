@@ -407,19 +407,14 @@ $env:KAKAO_REST_API_KEY="YOUR_KEY"
 - 지도/장소 API 실패 시에도 리포트 생성은 계속 진행 (해당 지역만 맛집 = 데이터 없음)
 - LLM JSON 파싱 실패 시 재시도는 최대 1회만 허용 (무한 재시도 금지)
 
-## 13. 제출 시 스크린샷 가이드
+## 13. 작업 결과물 스크린샷 
 
-아래 화면들을 캡처해두면, LLM/지도 API 연동뿐 아니라 litellm·Langfuse·Redis 캐싱까지 실제로 동작한다는 것을
-보여줄 수 있습니다. 캡처 전 화면에 `.env` 내용이나 실제 API 키 값이 노출되지 않았는지 확인하세요.
+1. **Langfuse 트레이스 화면**: 
 
-1. **Langfuse 트레이스 화면**: `http://192.168.10.20:3000`에서 방금 실행한 `travel_planner` trace를 열어,
-   `first_recommendation` → `place_search:{city}`(지역 수만큼) → `report_generation` span과 각 generation이
-   함께 보이는 화면. → litellm/Langfuse 연동 증거.
-2. **터미널 실행 로그 2개**:
-   - 최초 실행(캐시 미스): `[1/3]`~`[3/3]` 전체 로그가 보이는 화면.
-   - 같은 날짜로 1시간 이내 재실행(캐시 히트): `[캐시] Redis에 저장된 ... 재사용합니다` 로그가 보이는 화면.
-   - 두 장을 나란히 두면 캐싱이 실제로 API 호출을 건너뛴다는 것을 보여줄 수 있습니다.
-3. **`results/` 폴더 결과물**: `{date}_travel_data.json`과 `{date}_travel_plan.md`가 생성된 화면(파일
-   탐색기 또는 `ls results/`), 그리고 두 파일의 내용.
-4. **(선택) Redis 캐시 확인**: `redis-cli GET travel_planner:cache:{date}` 또는 `TTL
-   travel_planner:cache:{date}` 실행 결과 화면.
+   ![Langfuse 확인](images/langfuse.png)
+
+2. **redis 확인**:
+
+   ![Redis 캐시 확인](images/redis.png)
+
+   
