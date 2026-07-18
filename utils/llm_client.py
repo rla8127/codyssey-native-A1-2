@@ -12,6 +12,23 @@ logger = logging.getLogger(__name__)
 
 CITY_DETAIL_KEYS = ["city", "weather", "events", "reason"]
 
+# openai/gemini 두 provider를 같은 alias로 등록해 호출마다 랜덤으로 분산한다(litellm 기본 routing_strategy).
+_ROUTER_MODEL_ALIAS = "travel-llm"
+
+router = litellm.Router(
+    model_list=[
+        {
+            "model_name": _ROUTER_MODEL_ALIAS,
+            "litellm_params": {"model": settings.openai_model, "api_key": settings.openai_api_key},
+        },
+        {
+            "model_name": _ROUTER_MODEL_ALIAS,
+            "litellm_params": {"model": settings.gemini_model, "api_key": settings.gemini_api_key},
+        },
+    ],
+    routing_strategy="simple-shuffle",
+)
+
 
 def classify_exception(exc: Exception) -> str:
     """litellm 은 provider 별 예외를 자체 클래스명으로 정규화해 던지므로,
@@ -50,10 +67,9 @@ def call_first_recommendation(date_str: str, errors: list, span=None) -> dict:
             else None
         )
         try:
-            response = litellm.completion(
-                model=settings.openai_model,
+            response = router.completion(
+                model=_ROUTER_MODEL_ALIAS,
                 messages=messages,
-                api_key=settings.openai_api_key,
                 response_format={"type": "json_object"},
                 temperature=0.7,
             )
@@ -162,10 +178,9 @@ def call_final_report(
     messages = prompt_utils.build_final_report_messages(date_str, first_json, restaurants_by_city, errors)
     generation = span.generation(name="final_report", input=messages) if span else None
     try:
-        response = litellm.completion(
-            model=settings.openai_model,
+        response = router.completion(
+            model=_ROUTER_MODEL_ALIAS,
             messages=messages,
-            api_key=settings.openai_api_key,
             temperature=0.7,
         )
         content = (response.choices[0].message.content or "").strip()

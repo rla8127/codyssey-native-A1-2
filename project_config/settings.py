@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini/gemini-2.5-flash"
+
     kakao_rest_api_key: str = ""
 
     langfuse_host: str = "http://192.168.10.20:3000"

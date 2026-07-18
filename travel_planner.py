@@ -15,7 +15,7 @@ from utils.llm_client import call_final_report, call_first_recommendation
 logging.basicConfig(level=logging.INFO, format="%(asctime)s :: %(levelname)s :: %(message)s")
 logger = logging.getLogger(__name__)
 
-REQUIRED_SETTINGS = ["openai_api_key", "kakao_rest_api_key"]
+REQUIRED_SETTINGS = ["openai_api_key", "gemini_api_key", "kakao_rest_api_key"]
 
 
 def valid_date(value):
