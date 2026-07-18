@@ -101,31 +101,20 @@ utils/
 
 ```mermaid
 flowchart TD
-    User(["사용자: python travel_planner.py -date YYYY-MM-DD"]) --> CLI["travel_planner.py<br/>(오케스트레이션 + 키 검증)"]
-    CLI --> Cache{"Redis 캐시 확인<br/>travel_planner:cache:{date}"}
+    User(["사용자: python travel_planner.py -date YYYY-MM-DD"]) --> Step1["① 키 검증<br/>travel_planner.py"]
+    Step1 --> Step2{"② 캐시 확인<br/>(Redis)"}
 
-    Cache -->|"Hit (TTL 1h 이내)"| Report
-    Cache -->|"Miss"| First["① 1차 추천 생성<br/>call_first_recommendation"]
+    Step2 -->|"Hit (TTL 1h 이내)"| Step5
+    Step2 -->|"Miss"| Step3["③ 1차 추천 생성<br/>(LLM)"]
 
-    First -->|"litellm.completion()"| OpenAI[("OpenAI API")]
-    First --> Kakao["② 지역별 맛집 검색<br/>search_restaurants"]
-
-    Kakao -->|"GET 키워드 검색"| KakaoAPI[("Kakao Local API")]
-    Kakao -->|"캐시 저장 (TTL 3600s)"| Redis[("Redis")]
-    Kakao --> Report["③ 최종 리포트 생성<br/>call_final_report"]
-
-    Report -->|"litellm.completion()"| OpenAI
-    Report --> Files[["results/<br/>{date}_travel_data.json<br/>{date}_travel_plan.md"]]
-
-    CLI -.->|trace| Langfuse[("Langfuse<br/>trace / span / generation")]
-    First -.->|generation| Langfuse
-    Kakao -.->|span| Langfuse
-    Report -.->|generation| Langfuse
+    Step3 --> Step4["④ 지역별 맛집 검색<br/>(Kakao Local)"]
+    Step4 --> Step5["⑤ 최종 리포트 생성<br/>(LLM)"]
+    Step5 --> Step6[["⑥ 결과 저장<br/>results/{date}_travel_data.json<br/>results/{date}_travel_plan.md"]]
 ```
 
-- **litellm**: OpenAI 직접 SDK 대신 `litellm.completion()`을 통해 1차 추천(①)과 최종 리포트(③) 두 LLM 호출을 모두 수행합니다.
-- **Langfuse**: 실행마다 하나의 trace 아래 `first_recommendation` → `place_search:{city}` → `report_generation` span과 각 LLM 호출의 generation이 기록됩니다(점선). 키 미설정 시 NoOp으로 대체되어 흐름에는 영향이 없습니다.
-- **Redis**: 캐시 히트 시 ①·② 단계를 건너뛰고 바로 ③(최종 리포트 생성)으로 이동합니다. 캐시는 1차 추천이 성공했을 때만 TTL 3600초로 저장됩니다.
+- **litellm**: OpenAI 직접 SDK 대신 `litellm.completion()`을 통해 1차 추천(③)과 최종 리포트(⑤) 두 LLM 호출을 모두 수행합니다.
+- **Langfuse**: 실행마다 trace/span/generation이 기록되어 각 단계를 추적할 수 있습니다(다이어그램에는 생략). 키 미설정 시 NoOp으로 대체되어 흐름에는 영향이 없습니다. 자세한 내용은 [8. 프롬프트 / litellm / Langfuse 트레이싱](#8-프롬프트--litellm--langfuse-트레이싱) 참고.
+- **Redis**: 캐시 히트 시 ③·④ 단계를 건너뛰고 바로 ⑤(최종 리포트 생성)로 이동합니다. 캐시는 1차 추천이 성공했을 때만 TTL 3600초로 저장됩니다. 자세한 내용은 [9. 결과 캐싱 (Redis)](#9-결과-캐싱-redis) 참고.
 
 ## 4. 실행 방법
 
