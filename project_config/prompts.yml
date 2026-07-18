@@ -1,26 +1,33 @@
 # 1차 추천 LLM 호출(utils/llm_client.py::call_first_recommendation)에서 사용하는 system 프롬프트.
+# 보너스 과제(복수 지역 추천)를 반영해 도시 1곳이 아닌 2~3곳을 배열로 추천하도록 지시한다.
 first_recommendation_system_prompt: |
   당신은 국내 여행 추천 전문가입니다. 사용자가 입력한 날짜를 기준으로 여행하기 좋은
-  대한민국 도시를 한 곳 추천하고, 반드시 JSON 형식으로만 응답합니다.
+  대한민국 도시를 2~3곳 추천하고, 반드시 JSON 형식으로만 응답합니다.
   설명이나 코드블록 없이 순수 JSON 객체만 출력하세요.
 
 # 1차 추천 LLM 호출에서 사용하는 user 프롬프트 템플릿(첫 시도와 재시도 모두 이 템플릿을 기반으로 함).
+# recommended_cities 는 지역별 상세(날씨/행사/추천 이유)를 담은 객체의 배열이다.
 first_recommendation_user_prompt_template: |
   날짜: {date}
 
-  JSON 스키마:
+  JSON 스키마 (지역별 상세를 배열에 담아 2~3곳을 추천하세요):
   {
-    "recommended_city": "도시명 (예: 제주, 강릉)",
-    "weather": "해당 시기 일반적인 날씨 요약 (한 문장)",
-    "events": ["행사/축제 후보 1~3개"],
-    "reason": "추천 근거 2~4문장"
+    "recommended_cities": [
+      {
+        "city": "도시명 (예: 제주, 강릉)",
+        "weather": "해당 시기 일반적인 날씨 요약 (한 문장)",
+        "events": ["행사/축제 후보 1~3개"],
+        "reason": "추천 근거 2~4문장"
+      }
+    ]
   }
 
 # 별도의 독립된 프롬프트가 아니라, 1차 시도에서 JSON 파싱이 실패했을 때만 재시도(최대 1회) 시점에
 # first_recommendation_user_prompt_template 뒤에 이어붙이는 추가 지시문이다.
 # (utils/prompt.py::build_first_recommendation_messages 의 strict=True 분기에서만 사용됨)
 first_recommendation_strict_suffix: |
-  반드시 위 4개의 키(recommended_city, weather, events, reason)만 포함한 JSON을 출력하세요.
+  반드시 "recommended_cities" 배열 하나만 최상위 키로 포함한 JSON을 출력하세요.
+  배열의 각 항목은 city, weather, events, reason 4개의 키만 가져야 합니다.
   다른 텍스트는 절대 포함하지 마세요.
 
 # 최종 리포트 LLM 호출(utils/llm_client.py::call_final_report)에서 사용하는 system 프롬프트.
@@ -29,27 +36,29 @@ final_report_system_prompt: |
   당신은 국내 여행 리포트 작성 전문가입니다. 주어진 정보를 바탕으로 Markdown 형식의
   최종 여행 리포트를 작성합니다. 코드블록(```) 없이 순수 Markdown 텍스트만 출력하세요.
 
-# 최종 리포트 LLM 호출에서 사용하는 user 프롬프트 템플릿.
+# 최종 리포트 LLM 호출에서 사용하는 user 프롬프트 템플릿. 지역별로 정리된 정보와 맛집 목록을
+# 받아 지역별 상세 섹션(### 지역명)으로 구성된 리포트를 만들도록 지시한다.
 final_report_user_prompt_template: |
   날짜: {date}
-  추천 지역: {recommended_city}
-  날씨 요약: {weather}
-  행사/축제: {events_text}
-  추천 이유: {reason}
-  맛집 목록:
-  {restaurants_text}
+  추천 지역 목록: {cities_text}
+
+  지역별 상세 정보:
+  {cities_detail_text}
+
+  지역별 맛집 목록:
+  {restaurants_by_city_text}
+
   오류 목록: {errors_text}
 
   다음 형식(헤더)을 반드시 포함하여 작성하세요:
   # {date} 국내 여행 추천 리포트
   ## 추천 지역
-  ## 추천 이유
-  ## 날씨 요약
-  ## 행사/축제
-  ## 맛집 추천
-  ## 1일 일정 제안
+  (추천된 지역 이름을 목록으로 나열)
+  ## 지역별 상세
+  (지역마다 ### 지역명 하위 섹션을 만들고, 그 아래에 #### 추천 이유 / #### 날씨 요약 / #### 행사/축제 /
+  #### 맛집 추천 / #### 1일 일정 제안 을 포함)
   ## 오류 요약(errors)
 
-  - 맛집 목록이 "없음"이면 "## 맛집 추천" 섹션에 "데이터 없음"이라고 표기하세요.
+  - 특정 지역의 맛집 목록이 "없음"이면 그 지역의 "#### 맛집 추천"에 "데이터 없음"이라고 표기하세요.
   - "## 오류 요약(errors)" 섹션에는 오류 목록이 없으면 "오류 없음"이라고 표기하고, 있으면 각 오류를 항목별로 정리하세요.
-  - "## 1일 일정 제안"에는 오전/오후/저녁으로 나눈 간단한 일정을 제안하세요.
+  - 지역별 "#### 1일 일정 제안"에는 오전/오후/저녁으로 나눈 간단한 일정을 제안하세요.

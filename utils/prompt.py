@@ -53,30 +53,53 @@ def build_first_recommendation_messages(date_str: str, strict: bool = False) -> 
     ]
 
 
-def build_final_report_messages(
-    date_str: str, first_json: dict, restaurants: list, errors_list: list
-) -> list:
-    prompts = _load_prompts()
-
-    restaurants_text = (
-        "없음"
-        if not restaurants
-        else "\n".join(
-            f"- {r['name']} | {r['address']} | {r.get('category', '')} | {r.get('url', '')}"
-            for r in restaurants
-        )
+def _restaurants_block(restaurants: list) -> str:
+    if not restaurants:
+        return "없음"
+    return "\n".join(
+        f"- {r['name']} | {r['address']} | {r.get('category', '')} | {r.get('url', '')}"
+        for r in restaurants
     )
-    events_text = ", ".join(first_json.get("events") or []) or "없음"
+
+
+def build_final_report_messages(
+    date_str: str, first_json: dict, restaurants_by_city: list, errors_list: list
+) -> list:
+    """recommended_cities(지역별 상세)와 restaurants_by_city(지역별 맛집)를 지역명 기준으로 엮어
+    최종 리포트 프롬프트를 만든다."""
+    prompts = _load_prompts()
+    cities = first_json.get("recommended_cities") or []
+    restaurant_lookup = {item["city"]: item["restaurants"] for item in restaurants_by_city}
+
+    cities_text = ", ".join(c.get("city", "") for c in cities) or "없음"
+
+    cities_detail_text = (
+        "\n\n".join(
+            f"[{c.get('city')}]\n"
+            f"- 날씨: {c.get('weather')}\n"
+            f"- 행사/축제: {', '.join(c.get('events') or []) or '없음'}\n"
+            f"- 추천 이유: {c.get('reason')}"
+            for c in cities
+        )
+        or "없음"
+    )
+
+    restaurants_by_city_text = (
+        "\n\n".join(
+            f"[{c.get('city')}]\n{_restaurants_block(restaurant_lookup.get(c.get('city'), []))}"
+            for c in cities
+        )
+        or "없음"
+    )
+
     errors_text = "없음" if not errors_list else json.dumps(errors_list, ensure_ascii=False)
 
     user_prompt = _fill(
         prompts["final_report_user_prompt_template"],
         date=date_str,
-        recommended_city=first_json.get("recommended_city"),
-        weather=first_json.get("weather"),
-        events_text=events_text,
-        reason=first_json.get("reason"),
-        restaurants_text=restaurants_text,
+        cities_text=cities_text,
+        cities_detail_text=cities_detail_text,
+        restaurants_by_city_text=restaurants_by_city_text,
         errors_text=errors_text,
     )
     return [

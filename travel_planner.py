@@ -9,6 +9,7 @@ from datetime import date, datetime
 from project_config.settings import settings
 from utils.connection.kakao_client import search_restaurants
 from utils.connection.langfuse_manager import langfuse_manager
+from utils.connection.redis_cache import redis_cache_manager
 from utils.llm_client import call_final_report, call_first_recommendation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s :: %(levelname)s :: %(message)s")
@@ -62,14 +63,14 @@ def check_required_settings():
         sys.exit(1)
 
 
-def save_results(date_str, first_json, restaurants, errors, report_md):
+def save_results(date_str, first_json, restaurants_by_city, errors, report_md):
     results_dir = settings.results_dir
     results_dir.mkdir(exist_ok=True, parents=True)
 
     data = {
         "date": date_str,
         "recommended": first_json,
-        "restaurants": restaurants,
+        "restaurants_by_city": restaurants_by_city,
         "errors": errors,
     }
     json_path = results_dir / f"{date_str}_travel_data.json"
@@ -91,37 +92,55 @@ def main():
     langfuse_client = langfuse_manager.get_client()
     trace = langfuse_client.trace(name="travel_planner", input={"date": date_str})
 
-    print("[1/3] 1차 추천 생성 중(LLM)...")
-    span = trace.span(name="first_recommendation", input={"date": date_str})
-    first_json = call_first_recommendation(date_str, errors, span=span)
-    span.end(output=first_json)
-    print(f'    - recommended_city: "{first_json.get("recommended_city")}"')
-
-    print("[2/3] 맛집 검색 중(지도/장소 API)...")
-    city = first_json.get("recommended_city", "")
-    span = trace.span(name="place_search", input={"city": city})
-    restaurants = search_restaurants(city, errors, span=span)
-    place_errors = [e for e in errors if e["step"] == "place_search"]
-    if restaurants:
-        print(f"    - 맛집 {len(restaurants)}곳 검색 완료")
-    elif place_errors and place_errors[-1]["type"] == "AUTH_ERROR":
-        print("    - 오류: 인증 실패. 키 설정을 확인하세요.")
-        print("    - 맛집 섹션은 '데이터 없음'으로 처리하고 계속 진행합니다.")
-    elif place_errors and place_errors[-1]["type"] == "EMPTY_RESULT":
-        print("    - 검색 결과 0건(다음 단계로 진행)")
+    cached = redis_cache_manager.get(date_str)
+    if cached:
+        print(f"[캐시] Redis에 저장된 {date_str} 데이터를 재사용합니다 (1차 추천/맛집 검색 API 호출 생략)")
+        first_json = cached["recommended"]
+        restaurants_by_city = cached["restaurants_by_city"]
+        trace.update(metadata={"cache_hit": True})
     else:
-        print("    - 맛집 검색 실패. '데이터 없음'으로 처리하고 계속 진행합니다.")
+        print("[1/3] 1차 추천 생성 중(LLM)...")
+        span = trace.span(name="first_recommendation", input={"date": date_str})
+        first_json = call_first_recommendation(date_str, errors, span=span)
+        span.end(output=first_json)
+        cities_preview = ", ".join(c.get("city", "") for c in first_json.get("recommended_cities", []))
+        print(f'    - recommended_cities: "{cities_preview}"')
+
+        print("[2/3] 맛집 검색 중(지도/장소 API)...")
+        restaurants_by_city = []
+        for city_info in first_json.get("recommended_cities", []):
+            city = city_info.get("city", "")
+            span = trace.span(name=f"place_search:{city}", input={"city": city})
+            errors_before = len(errors)
+            restaurants = search_restaurants(city, errors, span=span)
+            restaurants_by_city.append({"city": city, "restaurants": restaurants})
+            new_errors = errors[errors_before:]
+            if restaurants:
+                print(f"    - [{city}] 맛집 {len(restaurants)}곳 검색 완료")
+            elif new_errors and new_errors[-1]["type"] == "AUTH_ERROR":
+                print(f"    - [{city}] 오류: 인증 실패. 키 설정을 확인하세요. '데이터 없음'으로 처리합니다.")
+            elif new_errors and new_errors[-1]["type"] == "EMPTY_RESULT":
+                print(f"    - [{city}] 검색 결과 0건(다음 단계로 진행)")
+            else:
+                print(f"    - [{city}] 맛집 검색 실패. '데이터 없음'으로 처리합니다.")
+
+        first_recommendation_ok = not any(e["step"] == "first_recommendation" for e in errors)
+        if first_recommendation_ok:
+            redis_cache_manager.set(
+                date_str, {"recommended": first_json, "restaurants_by_city": restaurants_by_city}
+            )
 
     print("[3/3] 최종 리포트 생성 중(LLM)...")
-    span = trace.span(name="report_generation", input={"recommended_city": city})
-    report_md = call_final_report(date_str, first_json, restaurants, errors, span=span)
+    cities = [c.get("city") for c in first_json.get("recommended_cities", [])]
+    span = trace.span(name="report_generation", input={"cities": cities})
+    report_md = call_final_report(date_str, first_json, restaurants_by_city, errors, span=span)
     span.end(output=report_md)
     print("    - 리포트 생성 완료")
 
     trace.update(output={"errors": errors})
     langfuse_client.flush()
 
-    json_path, md_path = save_results(date_str, first_json, restaurants, errors, report_md)
+    json_path, md_path = save_results(date_str, first_json, restaurants_by_city, errors, report_md)
     print(f"\n완료! {md_path} 를 확인하세요.")
     print(f"원본 데이터: {json_path}")
 

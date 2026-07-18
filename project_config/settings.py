@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     langfuse_timeout_seconds: int = 5
     langfuse_max_retries: int = 1
 
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+    cache_ttl_seconds: int = 3600
+
     config_dir: Path = PROJECT_ROOT / "project_config"
     results_dir: Path = PROJECT_ROOT / "results"
 
